@@ -2,38 +2,37 @@ import streamlit as st
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import cv2
 import numpy as np
-from PIL import Image
-import io
-import threading
 
 # Configuração da página
 st.set_page_config(page_title="BiospecklePy", layout="wide")
 
-# CSS para Estilo Verde
+# Estilo Visual Verde
 st.markdown("""
     <style>
     .stSlider [data-baseweb="slider"] [role="slider"] { background-color: #2D5A27; }
     .stSlider [data-baseweb="slider"] [aria-valuemax] { background-color: #2D5A27; }
-    div.stButton > button:first-child {
-        background-color: #2D5A27;
-        color: white;
-        border-radius: 8px;
-        width: 100%;
-    }
+    .stButton>button { background-color: #2D5A27; color: white; border-radius: 8px; width: 100%; height: 3em; font-weight: bold; }
+    .stButton>button:hover { background-color: #3d7a35; color: white; border: none; }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("🌱 BiospecklePy")
 
-# --- LÓGICA DE CAPTURA PERSISTENTE ---
-# Usamos um lock para evitar conflitos de leitura/escrita de memória
-lock = threading.Lock()
-img_container = {"img": None}
+# --- INTERFACE DE CONTROLE EM COLUNAS ---
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    modo = st.radio("Modo de Visão:", ["LASCA", "CINZA"])
+    camera_facing = st.selectbox("Câmera:", ["user", "environment"], format_func=lambda x: "Frontal" if x=="user" else "Externa")
+with col2:
+    m_gray = st.slider("Filtro de Ruído", 0, 255, 20)
+with col3:
+    c_scale = st.slider("Contraste LASCA", 1, 100, 30)
+with col4:
+    k_size = st.slider("Tamanho do Kernel", 3, 15, 5, step=2)
 
+# --- LÓGICA DE PROCESSAMENTO ---
 def video_frame_callback(frame):
     img = frame.to_ndarray(format="bgr24")
-    
-    # Processamento LASCA/CINZA
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
     if modo == "CINZA":
@@ -50,25 +49,9 @@ def video_frame_callback(frame):
         lasca_u8[mean < m_gray] = 0
         result = cv2.applyColorMap(lasca_u8, cv2.COLORMAP_JET)
     
-    # Salva o frame de forma segura
-    with lock:
-        img_container["img"] = result
-        
     return frame.from_ndarray(result, format="bgr24")
 
-# --- INTERFACE ---
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    modo = st.radio("Modo:", ["LASCA", "CINZA"])
-    camera_facing = st.selectbox("Câmera:", ["user", "environment"], format_func=lambda x: "Frontal" if x=="user" else "Externa")
-with col2:
-    m_gray = st.slider("Filtro Ruído", 0, 255, 20)
-with col3:
-    c_scale = st.slider("Contraste", 1, 100, 30)
-with col4:
-    k_size = st.slider("Kernel", 3, 15, 5, step=2)
-
-# --- VÍDEO ---
+# --- EXIBIÇÃO DO VÍDEO ---
 webrtc_streamer(
     key="biospeckle",
     mode=WebRtcMode.SENDRECV,
@@ -78,26 +61,44 @@ webrtc_streamer(
     async_processing=True,
 )
 
+# --- BOTÃO DE CAPTURA VIA JAVASCRIPT (CLIENT-SIDE) ---
 st.write("---")
-
-# --- CAPTURA CORRIGIDA ---
-if st.button("📸 PREPARAR CAPTURA"):
-    with lock:
-        frame_para_download = img_container["img"]
-    
-    if frame_para_download is not None:
-        rgb_img = cv2.cvtColor(frame_para_download, cv2.COLOR_BGR2RGB)
-        img_pil = Image.fromarray(rgb_img)
-        buf = io.BytesIO()
-        img_pil.save(buf, format="TIFF")
+st.markdown("""
+    <script>
+    function captureImage() {
+        const video = document.querySelector('video');
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
-        st.download_button(
-            label="💾 BAIXAR IMAGEM (.TIF)",
-            data=buf.getvalue(),
-            file_name="biospeckle_web.tif",
-            mime="image/tiff"
-        )
-    else:
-        st.warning("Aguarde o vídeo carregar. Se o erro persistir, clique em START e espere 3 segundos.")
+        const link = document.createElement('a');
+        link.download = 'biospeckle_capture.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+    }
+    </script>
+    """, unsafe_allow_html=True)
 
-st.caption("BiospecklePy v2.2 - Estável")
+if st.button("📸 CAPTURAR IMAGEM AGORA"):
+    st.components.v1.html("""
+        <script>
+        const video = window.parent.document.querySelector('video');
+        if (video) {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const link = document.createElement('a');
+            link.download = 'biospeckle_capture.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        } else {
+            alert("Inicie a câmera antes de capturar!");
+        }
+        </script>
+        """, height=0)
+
+st.caption("BiospecklePy Web - Captura Instantânea via Navegador")
