@@ -1,45 +1,55 @@
 import streamlit as st
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 import cv2
 import numpy as np
-from PIL import Image
 
-st.set_page_config(page_title="BiospecklePy Web", layout="wide")
+st.set_page_config(page_title="BiospecklePy Live", layout="wide")
 
-st.title("🌱 BiospecklePy - Análise Online")
-st.sidebar.header("Configurações do Algoritmo")
+st.title("🌱 BiospecklePy - Análise em Tempo Real")
 
-# Upload do arquivo
-uploaded_file = st.file_uploader("Suba um vídeo ou imagem de Speckle", type=['mp4', 'avi', 'png', 'jpg', 'tif'])
-
-# Controles na barra lateral
+# Barra Lateral com os controles (igual ao seu .exe)
+st.sidebar.header("Parâmetros de Análise")
+min_gray = st.sidebar.slider("Mínimo Cinza", 0, 255, 10)
+contrast_scale = st.sidebar.slider("Contraste", 1, 100, 20)
 kernel_size = st.sidebar.slider("Tamanho do Kernel", 3, 15, 5, step=2)
-contrast_gain = st.sidebar.slider("Ganho de Contraste", 1.0, 10.0, 2.0)
 
-if uploaded_file is not None:
-    # Lógica simplificada para processar a imagem carregada
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-    
-    if img is not None:
-        img_f32 = img.astype(np.float32)
+class BiospeckleTransformer(VideoTransformerBase):
+    def __init__(self):
+        self.kernel_size = kernel_size
+
+    def transform(self, frame):
+        # Converte o frame da câmera para array numpy
+        img = frame.to_ndarray(format="bgr24")
         
-        # Algoritmo LASCA simplificado
+        # Converte para escala de cinza para o algoritmo
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img_f32 = gray.astype(np.float32)
+
+        # --- Algoritmo LASCA ---
         kernel = np.ones((kernel_size, kernel_size), np.float32) / (kernel_size**2)
-        mean = cv2.filter2D(img_f32, -1, kernel)
-        sq_mean = cv2.filter2D(img_f32**2, -1, kernel)
-        std = cv2.sqrt(cv2.absdiff(sq_mean, mean**2))
+        mean_img = cv2.filter2D(img_f32, -1, kernel)
         
-        # Evita divisão por zero
-        mean[mean == 0] = 1
-        contrast = std / mean
+        # Cálculo do desvio padrão
+        sq_img_mean = cv2.filter2D(img_f32**2, -1, kernel)
+        std = cv2.sqrt(cv2.absdiff(sq_img_mean, mean_img**2))
         
-        # Normalização para visualização
-        flow = 255 - (contrast * (255 / contrast_gain))
-        flow = np.clip(flow, 0, 255).astype(np.uint8)
-        flow_color = cv2.applyColorMap(flow, cv2.COLORMAP_JET)
+        # Máscara de brilho mínimo
+        mask = mean_img < min_gray
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(img, caption="Original (Speckle)", use_column_width=True)
-        with col2:
-            st.image(flow_color, caption="Mapa de Fluxo (LASCA)", use_column_width=True)
+        # Cálculo do contraste (K = std/mean)
+        mean_img[mean_img == 0] = 1 # Evita divisão por zero
+        lasca = (std / mean_img) * (255.0 / (contrast_scale / 100.0))
+        
+        # Inverte e coloriza (Igual ao seu .exe)
+        lasca_u8 = 255 - np.clip(lasca, 0, 255).astype(np.uint8)
+        lasca_u8[mask] = 0
+        
+        # Aplica o mapa de cores JET
+        result = cv2.applyColorMap(lasca_u8, cv2.COLORMAP_JET)
+        
+        return result
+
+# O botão de "Start" que o navegador precisa para pedir permissão da câmera
+webrtc_streamer(key="biospeckle", video_transformer_factory=BiospeckleTransformer)
+
+st.write("Dica: Clique em 'Start' acima para ativar sua câmera e iniciar o processamento.")
