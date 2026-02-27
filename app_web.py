@@ -5,10 +5,27 @@ import numpy as np
 from PIL import Image
 import io
 
-# Configuração da página
+# Configuração da página e Estilo Verde (CSS Customizado)
 st.set_page_config(page_title="BiospecklePy", layout="wide")
 
-# Título Simplificado
+# Aplica CSS para deixar sliders e botões verdes
+st.markdown("""
+    <style>
+    .stSlider [data-baseweb="slider"] [role="slider"] { background-color: #2D5A27; }
+    .stSlider [data-baseweb="slider"] [aria-valuemax] { background-color: #2D5A27; }
+    div.stButton > button:first-child {
+        background-color: #2D5A27;
+        color: white;
+        border-radius: 5px;
+        border: none;
+    }
+    div.stButton > button:hover {
+        background-color: #3d7a35;
+        color: white;
+    }
+    </style>
+    """, unsafe_allow_dict=True)
+
 st.title("🌱 BiospecklePy")
 
 # --- CONFIGURAÇÃO DE REDE ---
@@ -16,13 +33,16 @@ RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
-# --- INTERFACE DE CONTROLE (ABAIXO DO VÍDEO) ---
+# Inicializa o buffer de captura no estado da sessão
+if "frame_capturado" not in st.session_state:
+    st.session_state["frame_capturado"] = None
+
+# --- INTERFACE DE CONTROLE ---
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     modo = st.radio("Modo de Visão:", ["LASCA", "CINZA"], key="modo_visao")
-    # Seletor de Câmera (Frontal ou Traseira/USB)
-    camera_facing = st.selectbox("Selecionar Câmera:", ["user", "environment"], 
+    camera_facing = st.selectbox("Câmera:", ["user", "environment"], 
                                  format_func=lambda x: "Frontal/Padrão" if x == "user" else "Traseira/Externa")
 
 with col2:
@@ -32,10 +52,7 @@ with col2:
 with col3:
     k_size = st.slider("Tamanho do Kernel", 3, 15, 5, step=2)
 
-# Variável para armazenar o último frame processado para captura
-if "last_frame" not in st.session_state:
-    st.session_state["last_frame"] = None
-
+# --- FUNÇÃO DE PROCESSAMENTO ---
 def video_frame_callback(frame):
     img = frame.to_ndarray(format="bgr24")
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -54,43 +71,39 @@ def video_frame_callback(frame):
         lasca_u8[mean < m_gray] = 0
         result = cv2.applyColorMap(lasca_u8, cv2.COLORMAP_JET)
     
-    # Salva o frame no estado da sessão para permitir o download
-    st.session_state["last_frame"] = result
+    # SALVAMENTO PERSISTENTE
+    st.session_state["frame_capturado"] = result
+    
     return frame.from_ndarray(result, format="bgr24")
 
-# --- EXIBIÇÃO DO VÍDEO ---
-ctx = webrtc_streamer(
+# --- VÍDEO ---
+webrtc_streamer(
     key="biospeckle",
     mode=WebRtcMode.SENDRECV,
     rtc_configuration=RTC_CONFIGURATION,
     video_frame_callback=video_frame_callback,
-    media_stream_constraints={
-        "video": {"facingMode": camera_facing},
-        "audio": False
-    },
+    media_stream_constraints={"video": {"facingMode": camera_facing}, "audio": False},
     async_processing=True,
 )
 
-# --- BOTÃO DE CAPTURA ---
 st.write("---")
-if st.button("📸 PREPARAR CAPTURA"):
-    if st.session_state["last_frame"] is not None:
-        # Converte de BGR (OpenCV) para RGB (PIL)
-        rgb_img = cv2.cvtColor(st.session_state["last_frame"], cv2.COLOR_BGR2RGB)
+
+# --- SISTEMA DE CAPTURA CORRIGIDO ---
+if st.button("📸 GERAR ARQUIVO DE CAPTURA"):
+    if st.session_state["frame_capturado"] is not None:
+        # Processa a imagem para download
+        rgb_img = cv2.cvtColor(st.session_state["frame_capturado"], cv2.COLOR_BGR2RGB)
         img_pil = Image.fromarray(rgb_img)
-        
-        # Cria um buffer de memória para o download
         buf = io.BytesIO()
         img_pil.save(buf, format="TIFF")
-        byte_im = buf.getvalue()
         
         st.download_button(
-            label="💾 BAIXAR IMAGEM CAPTURADA (.TIF)",
-            data=byte_im,
-            file_name=f"biospeckle_capture.tif",
+            label="💾 BAIXAR AGORA (.TIF)",
+            data=buf.getvalue(),
+            file_name="captura_biospeckle.tif",
             mime="image/tiff"
         )
     else:
-        st.warning("Inicie a câmera antes de capturar.")
+        st.error("O sistema ainda não recebeu quadros da câmera. Inicie o vídeo e aguarde 2 segundos.")
 
-st.caption("BiospecklePy Web Edition")
+st.caption("BiospecklePy Web v2.0")
