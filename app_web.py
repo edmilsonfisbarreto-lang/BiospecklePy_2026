@@ -6,38 +6,47 @@ import numpy as np
 # Configuração da página
 st.set_page_config(page_title="BiospecklePy", layout="wide")
 
-# CSS Estilo Verde (Sliders e Botões)
+# CSS para Estilo Verde e Posicionamento da Escala de Cores
 st.markdown("""
     <style>
+    /* Estilo dos Sliders */
     .stSlider [data-baseweb="slider"] [role="slider"] { background-color: #2D5A27; }
     .stSlider [data-baseweb="slider"] [aria-valuemax] { background-color: #2D5A27; }
-    .stButton>button { 
-        background-color: #2D5A27; 
-        color: white; 
-        border-radius: 8px; 
-        width: 100%; 
-        height: 3.5em; 
-        font-weight: bold;
-        border: none;
+    
+    /* Container do Vídeo e Escala */
+    .video-flex-container {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 15px;
+        margin-bottom: 20px;
     }
-    .stButton>button:hover { background-color: #3d7a35; color: white; }
-    #video-container { position: relative; }
+    .color-bar {
+        width: 30px;
+        height: 350px;
+        background: linear-gradient(to top, #00008F, #0000FF, #00FFFF, #FFFF00, #FF0000, #800000);
+        border: 2px solid #555;
+        border-radius: 5px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        align-items: center;
+        padding: 5px 0;
+        color: white;
+        font-weight: bold;
+        font-size: 10px;
+        font-family: sans-serif;
+    }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("🌱 BiospecklePy")
 
-# --- CONFIGURAÇÃO DE REDE ---
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-)
-
-# --- CONTROLES (UNIFICADOS) ---
+# --- CONTROLES UNIFICADOS ---
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     modo = st.radio("Modo de Visão:", ["LASCA", "CINZA"])
-    # Seleção única de câmera
     escolha_camera = st.selectbox("Escolher Câmera:", ["user", "environment"], 
                                  format_func=lambda x: "Câmera Frontal/Padrão" if x == "user" else "Câmera Externa/Traseira")
 
@@ -71,48 +80,34 @@ def video_frame_callback(frame):
     
     return frame.from_ndarray(result, format="bgr24")
 
-# --- PLAYER DE VÍDEO ---
-# O vídeo agora obedece cegamente à seleção do Selectbox acima
+# --- ÁREA DO VÍDEO COM ESCALA LATERAL ---
+# Criamos um layout HTML/CSS para colocar a escala ao lado do vídeo
+st.markdown('<div class="video-flex-container">', unsafe_allow_html=True)
+
+# O vídeo propriamente dito
 webrtc_streamer(
     key="biospeckle-main",
     mode=WebRtcMode.SENDRECV,
-    rtc_configuration=RTC_CONFIGURATION,
+    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
     video_frame_callback=video_frame_callback,
     media_stream_constraints={
-        "video": {"facingMode": {"exact": escolha_camera} if escolha_camera == "environment" else escolha_camera},
+        "video": {"facingMode": escolha_camera},
         "audio": False
     },
     async_processing=True,
 )
 
+# A Escala de Cores (HTML)
+st.markdown("""
+    <div class="color-bar">
+        <span>MAX</span>
+        <span>|</span>
+        <span>|</span>
+        <span>|</span>
+        <span>MIN</span>
+    </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 st.write("---")
-
-# --- BOTÃO DE CAPTURA (MÉTODO CANVAS INVISÍVEL) ---
-if st.button("📸 CAPTURAR E SALVAR IMAGEM"):
-    st.components.v1.html("""
-        <script>
-        // Função para encontrar o vídeo mesmo dentro de componentes complexos
-        const videos = window.parent.document.querySelectorAll("video");
-        const targetVideo = videos[0]; 
-
-        if (targetVideo && targetVideo.readyState === 4) {
-            const canvas = document.createElement("canvas");
-            canvas.width = targetVideo.videoWidth;
-            canvas.height = targetVideo.videoHeight;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(targetVideo, 0, 0, canvas.width, canvas.height);
-            
-            const dataURL = canvas.toDataURL("image/png");
-            const link = document.createElement("a");
-            link.href = dataURL;
-            link.download = "biospeckle_web_capture.png";
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        } else {
-            alert("Erro: Câmera não detectada ou ainda carregando. Clique em START primeiro.");
-        }
-        </script>
-        """, height=0)
-
-st.caption("BiospecklePy Web - Versão Integrada")
+st.caption("BiospecklePy Web - Escala de Intensidade de Fluxo Ativa")
