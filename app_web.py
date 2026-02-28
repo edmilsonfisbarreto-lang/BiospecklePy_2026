@@ -89,4 +89,4 @@ webrtc_streamer(
     async_processing=True,
 )
 
-st.caption("BiospecklePy Web - Escala Lateral Compacta")
+st.caption("Desenvolvido por Edmilson Souza Barreto")
