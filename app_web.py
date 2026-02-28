@@ -1,92 +1,113 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import cv2
 import numpy as np
+from PIL import Image
 
-st.set_page_config(page_title="BiospecklePy", layout="wide")
+st.set_page_config(page_title="BiospecklePy", layout="wide", page_icon="🧪")
 
-# CSS para Sliders Verdes
+# ── CSS escuro ──────────────────────────────────────────────────────────────
 st.markdown("""
-    <style>
-    .stSlider [data-baseweb="slider"] [role="slider"] { background-color: #2D5A27; }
-    .stSlider [data-baseweb="slider"] [aria-valuemax] { background-color: #2D5A27; }
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+  body, .stApp { background-color: #030712; color: white; }
+  section[data-testid="stSidebar"] { background-color: #111827; }
+  .stSlider > div { color: white; }
+  h1, h2, h3, label, p { color: white !important; }
+</style>
+""", unsafe_allow_html=True)
 
-st.title("🌱 BiospecklePy")
+# ── Colormap Jet ─────────────────────────────────────────────────────────────
+def jet_colormap(t):
+    r = np.clip(1.5 - np.abs(4 * t - 3), 0, 1)
+    g = np.clip(1.5 - np.abs(4 * t - 2), 0, 1)
+    b = np.clip(1.5 - np.abs(4 * t - 1), 0, 1)
+    return (np.stack([r, g, b], axis=-1) * 255).astype(np.uint8)
 
-# --- CONTROLES ---
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    modo = st.radio("Modo de Visão:", ["LASCA", "CINZA"])
-    escolha_camera = st.selectbox("Câmera:", ["user", "environment"], 
-                                 format_func=lambda x: "Frontal" if x == "user" else "Externa")
-with col2:
-    m_gray = st.slider("Filtro de Ruído", 0, 255, 20)
-with col3:
-    c_scale = st.slider("Contraste LASCA", 1, 100, 30)
-with col4:
-    k_size = st.slider("Tamanho do Kernel", 3, 15, 5, step=2)
+# ── Processamento LASCA ───────────────────────────────────────────────────────
+def process_lasca(frame, min_gray, contrast, gain, exposure):
+    gain_factor = 1 + gain / 740
+    exposure_factor = exposure / 5
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray = gray * gain_factor * exposure_factor
 
-# --- FUNÇÃO PARA DESENHAR ESCALA DENTRO DO VÍDEO (REDUZIDA) ---
-def desenhar_escala(img):
-    h, w = img.shape[:2]
-    # Barra reduzida: 2% da largura e 30% da altura
-    bar_w = int(w * 0.02)
-    bar_h = int(h * 0.3)
-    x_offset = w - bar_w - 15  # Recuo da borda direita
-    y_offset = int((h - bar_h) / 2)
+    kernel_size = 5
+    mean = cv2.blur(gray, (kernel_size, kernel_size))
+    mean_sq = cv2.blur(gray ** 2, (kernel_size, kernel_size))
+    variance = np.maximum(mean_sq - mean ** 2, 0)
+    std = np.sqrt(variance)
 
-    # Cria o gradiente
-    escala_cinza = np.linspace(0, 255, bar_h).astype(np.uint8).reshape(-1, 1)
-    escala_cinza = np.repeat(escala_cinza, bar_w, axis=1)
-    escala_cinza = cv2.flip(escala_cinza, 0)
-    
-    barra_colorida = cv2.applyColorMap(escala_cinza, cv2.COLORMAP_JET)
+    max_c = max(0.01, contrast / 100)
+    lasca = np.where(mean > min_gray, np.clip((std / np.maximum(mean, 1e-6)) / max_c, 0, 1), 0)
+    lasca_inv = 1 - lasca
 
-    # Borda branca fina
-    cv2.rectangle(img, (x_offset-1, y_offset-1), (x_offset+bar_w+1, y_offset+bar_h+1), (255,255,255), 1)
-    
-    # Sobrepõe na imagem
-    img[y_offset:y_offset+bar_h, x_offset:x_offset+bar_w] = barra_colorida
-    
-    # Textos menores
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(img, "+", (x_offset - 15, y_offset + 10), font, 0.5, (255,255,255), 1)
-    cv2.putText(img, "-", (x_offset - 12, y_offset + bar_h), font, 0.5, (255,255,255), 1)
-    
-    return img
+    output = jet_colormap(lasca_inv)
+    mask = mean < min_gray
+    output[mask] = [0, 0, 0]
+    return output
 
-# --- PROCESSAMENTO ---
-def video_frame_callback(frame):
-    img = frame.to_ndarray(format="bgr24")
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    if modo == "CINZA":
-        result = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-    else:
-        img_f32 = gray.astype(np.float32)
-        kernel = np.ones((k_size, k_size), np.float32) / (k_size**2)
-        mean = cv2.filter2D(img_f32, -1, kernel)
-        sq_mean = cv2.filter2D(img_f32**2, -1, kernel)
-        std = cv2.sqrt(cv2.absdiff(sq_mean, mean**2))
-        mean[mean == 0] = 1
-        lasca = (std / mean) * (255.0 / (c_scale / 50.0))
-        lasca_u8 = 255 - np.clip(lasca, 0, 255).astype(np.uint8)
-        lasca_u8[mean < m_gray] = 0
-        result = cv2.applyColorMap(lasca_u8, cv2.COLORMAP_JET)
-        result = desenhar_escala(result)
-    
-    return frame.from_ndarray(result, format="bgr24")
+def process_gray(frame, gain, exposure):
+    gain_factor = 1 + gain / 740
+    exposure_factor = exposure / 5
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray = np.clip(gray * gain_factor * exposure_factor, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
 
-# --- VÍDEO ---
-webrtc_streamer(
-    key="biospeckle",
-    mode=WebRtcMode.SENDRECV,
-    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-    video_frame_callback=video_frame_callback,
-    media_stream_constraints={"video": {"facingMode": escolha_camera}, "audio": False},
-    async_processing=True,
-)
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("## 🧪 BiospecklePy")
+    st.caption("Sistema de Análise LASCA")
+    st.divider()
 
-st.caption("BiospecklePy Web - Escala Lateral Compacta")
+    camera_id = st.selectbox("Câmera", [0, 1, 2], format_func=lambda x: f"Câmera {x}")
+    mode = st.radio("Modo de Visualização", ["FLUXO", "CINZA"])
+    st.divider()
+
+    st.markdown("**PARÂMETROS**")
+    min_gray = st.slider("Mín Cinza", 0, 255, 10)
+    contrast = st.slider("Contraste", 1, 100, 20)
+    exposure = st.slider("Exposição", 1, 13, 5)
+    gain = st.slider("Ganho", 0, 740, 0)
+    zoom = st.slider("Zoom (px)", 400, 1100, 800)
+    st.divider()
+
+    capture = st.button("📸 CAPTURAR IMAGEM", use_container_width=True)
+    st.divider()
+    st.caption("Desenvolvido por Edmilson Souza Barreto")
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+st.title("BiospecklePy — Análise LASCA em Tempo Real")
+
+FRAME_WINDOW = st.image([])
+cap = cv2.VideoCapture(camera_id)
+
+stop = st.button("⏹ PARAR", use_container_width=True)
+captured_image = None
+
+if not cap.isOpened():
+    st.error("Não foi possível acessar a câmera. Verifique se ela está conectada.")
+else:
+    while not stop:
+        ret, frame = cap.read()
+        if not ret:
+            st.warning("Sem sinal da câmera.")
+            break
+
+        if mode == "FLUXO":
+            result = process_lasca(frame, min_gray, contrast, gain, exposure)
+        else:
+            result = process_gray(frame, gain, exposure)
+
+        display_width = min(zoom, 1000)
+        display_height = int(display_width * 0.75)
+        result_resized = cv2.resize(result, (display_width, display_height))
+
+        FRAME_WINDOW.image(result_resized, channels="RGB")
+        captured_image = result_resized
+
+    cap.release()
+
+if capture and captured_image is not None:
+    img_pil = Image.fromarray(captured_image)
+    import io
+    buf = io.BytesIO()
+    img_pil.save(buf, format="PNG")
+    st.download_button("⬇️ Baixar Imagem", buf.getvalue(), "analise_lasca.png", "image/png")
