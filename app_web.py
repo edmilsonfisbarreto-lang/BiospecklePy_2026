@@ -1,11 +1,11 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, WebRtcMode
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import cv2
 import numpy as np
 
 st.set_page_config(page_title="BiospecklePy", layout="wide")
 
-# CSS para Sliders Verdes
+# Estilo Verde para Sliders
 st.markdown("""
     <style>
     .stSlider [data-baseweb="slider"] [role="slider"] { background-color: #2D5A27; }
@@ -15,99 +15,87 @@ st.markdown("""
 
 st.title("🌱 BiospecklePy")
 
-# --- CONTROLES SUPERIORES ---
-col1, col2, col3, col4, col5 = st.columns(5)
+# --- CONTROLES SOLICITADOS ---
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    modo = st.radio("Modo de Visão:", ["FLUXO", "CINZA"])
-    escolha_camera = st.selectbox("Câmera:", ["user", "environment"], 
-                                   format_func=lambda x: "Frontal" if x == "user" else "Externa/Traseira")
+    modo = st.radio("Modo de Visão:", ["LASCA", "CINZA"])
+    min_cinza = st.slider("MÍN_CINZA", 0, 255, 20)
 
 with col2:
-    gain = st.slider("GANHO", 0, 740, 0)
-    exposure = st.slider("EXPOSIÇÃO", 1, 13, 5)
+    contraste = st.slider("CONTRASTE", 1, 100, 30)
+    # Exposição: Geralmente valores negativos em navegadores representam compensação
+    exposicao = st.slider("EXPOSIÇÃO", -10, 10, 0)
 
 with col3:
-    m_gray = st.slider("Mín Cinza", 0, 255, 10)
+    # Ganho (ISO/Sensibilidade)
+    ganho = st.slider("GANHO", 0, 100, 0)
+    kernel_size = st.slider("KERNEL (Suavização)", 3, 15, 5, step=2)
 
 with col4:
-    c_scale = st.slider("Contraste LASCA", 1, 100, 20)
+    escolha_camera = st.selectbox("Câmera:", ["user", "environment"], 
+                                 format_func=lambda x: "Frontal" if x == "user" else "Externa")
 
-with col5:
-    k_size = st.slider("Tamanho do Kernel", 3, 15, 5, step=2)
-
-# --- FUNÇÃO DA ESCALA LATERAL (INVERTIDA APENAS NA BARRA) ---
+# --- FUNÇÃO DA ESCALA DE CORES INTERNA ---
 def desenhar_escala(img):
     h, w = img.shape[:2]
-    bar_w = int(w * 0.03)
-    bar_h = int(h * 0.5)
-    x_offset = w - bar_w - 30
-    y_offset = int((h - bar_h) / 2)
+    bar_w, bar_h = int(w * 0.05), int(h * 0.6)
+    x_offset, y_offset = w - bar_w - 20, int((h - bar_h) / 2)
 
-    # Gradiente para a BARRA: Azul no topo (Alto), Vermelho na base (Baixo)
-    # Criamos o gradiente 0-255 e aplicamos JET
     escala_cinza = np.linspace(0, 255, bar_h).astype(np.uint8).reshape(-1, 1)
     escala_cinza = np.repeat(escala_cinza, bar_w, axis=1)
-    # No JET, 255 é Vermelho e 0 é Azul. Para Azul no topo, deixamos o 0 em cima.
+    escala_cinza = cv2.flip(escala_cinza, 0)
     barra_colorida = cv2.applyColorMap(escala_cinza, cv2.COLORMAP_JET)
-    
+
     cv2.rectangle(img, (x_offset-2, y_offset-2), (x_offset+bar_w+2, y_offset+bar_h+2), (255,255,255), 1)
     img[y_offset:y_offset+bar_h, x_offset:x_offset+bar_w] = barra_colorida
     
     font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(img, "ALTO (AZUL)", (x_offset - 85, y_offset + 10), font, 0.4, (255,255,255), 1)
-    cv2.putText(img, "BAIXO (VERM)", (x_offset - 90, y_offset + bar_h), font, 0.4, (255,255,255), 1)
+    cv2.putText(img, "MAX", (x_offset - 35, y_offset + 10), font, 0.4, (255,255,255), 1)
+    cv2.putText(img, "MIN", (x_offset - 30, y_offset + bar_h), font, 0.4, (255,255,255), 1)
     return img
 
-# --- PROCESSAMENTO DE VÍDEO ---
+# --- PROCESSAMENTO ---
 def video_frame_callback(frame):
     img = frame.to_ndarray(format="bgr24")
-    
-    # Ajustes de Brilho Originais
-    total_f = (1 + gain / 740) * (exposure / 5)
-    gray_f32 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) * total_f
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
     if modo == "CINZA":
-        result_u8 = np.clip(gray_f32, 0, 255).astype(np.uint8)
-        result = cv2.cvtColor(result_u8, cv2.COLOR_GRAY2BGR)
+        result = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     else:
-        # Lógica LASCA
-        kernel = np.ones((k_size, k_size), np.float32) / (k_size**2)
-        mean = cv2.filter2D(gray_f32, -1, kernel)
-        sq_mean = cv2.filter2D(gray_f32**2, -1, kernel)
-        std = cv2.sqrt(cv2.max(0.0, sq_mean - mean**2))
+        img_f32 = gray.astype(np.float32)
+        kernel = np.ones((kernel_size, kernel_size), np.float32) / (kernel_size**2)
+        mean = cv2.filter2D(img_f32, -1, kernel)
+        sq_mean = cv2.filter2D(img_f32**2, -1, kernel)
+        std = cv2.sqrt(cv2.absdiff(sq_mean, mean**2))
         
-        max_c = max(0.01, c_scale / 100.0)
+        mean[mean == 0] = 1
+        lasca = (std / mean) * (255.0 / (contraste / 50.0))
+        lasca_u8 = 255 - np.clip(lasca, 0, 255).astype(np.uint8)
+        lasca_u8[mean < min_cinza] = 0
         
-        with np.errstate(divide='ignore', invalid='ignore'):
-            k = np.divide(std, mean, out=np.zeros_like(std), where=mean > 0)
-            lasca = k / max_c
-            lasca[mean < m_gray] = 1.0 # Áreas escuras = sem atividade (Preto/Frio)
-            
-            # VÍDEO: Mantém lógica original (Atividade alta em Vermelho)
-            # 1-lasca inverte para que valores altos de k resultem em 0 (Azul) no JET
-            # Se você quer o VÍDEO original, usamos (1.0 - lasca) para JET padrão
-            lasca_u8 = (np.clip(1.0 - lasca, 0, 1) * 255).astype(np.uint8)
-            
         result = cv2.applyColorMap(lasca_u8, cv2.COLORMAP_JET)
         result = desenhar_escala(result)
-
+    
     return frame.from_ndarray(result, format="bgr24")
 
-# --- EXECUÇÃO DO STREAMER ---
-# Removido o "exact" para evitar OverconstrainedError
+# --- VÍDEO COM RESTRIÇÕES DE HARDWARE ---
 webrtc_streamer(
-    key=f"biospeckle-v2-{escolha_camera}",
+    key="biospeckle",
     mode=WebRtcMode.SENDRECV,
     rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
     video_frame_callback=video_frame_callback,
     media_stream_constraints={
         "video": {
-            "facingMode": escolha_camera 
-        }, 
+            "facingMode": escolha_camera,
+            # Tentativa de aplicar Exposição e Ganho via Constraints (Pode não funcionar em todas as câmeras)
+            "exposureMode": "manual",
+            "exposureCompensation": exposicao,
+            "iso": ganho
+        },
         "audio": False
     },
     async_processing=True,
 )
 
-st.caption("BiospecklePy Web - Escala corrigida na barra lateral.")
+st.caption("BiospecklePy Web - Controles de Hardware e Algoritmo Ativos")
