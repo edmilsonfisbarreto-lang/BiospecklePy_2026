@@ -4,12 +4,8 @@ import numpy as np
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 import av
 
-# Configuração da Página
-st.set_page_config(page_title="BiospecklePy - LASCA", layout="wide")
-
-def jet_colormap(value):
-    """Simula o mapeamento Jet (0-1) para BGR"""
-    return cv2.applyColorMap((value * 255).astype(np.uint8), cv2.COLORMAP_JET)
+# Configuração da página para usar a largura total
+st.set_page_config(page_title="BiospecklePy", layout="wide")
 
 class BiospeckleTransformer(VideoTransformerBase):
     def __init__(self):
@@ -22,70 +18,88 @@ class BiospeckleTransformer(VideoTransformerBase):
     def transform(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # 1. Ajuste de Ganho e "Exposição" (Brilho/Contraste linear)
+        # Ajuste de Ganho e Brilho (Exposição simulada)
         img = cv2.convertScaleAbs(img, alpha=self.gain, beta=self.exposure * 10)
         
-        # 2. Conversão para Escala de Cinza
+        # Conversão para Cinza
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
         if self.mode == "CINZA":
-            # Retorna imagem em tons de cinza (convertida de volta para BGR para o streamer)
             return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-        # 3. Lógica LASCA (Modo FLUXO)
-        # Usamos uma janela de 5x5 para calcular desvio padrão e média
+        # Lógica LASCA (Cálculo de Bio-speckle)
         gray_f = gray.astype(np.float32)
-        
-        # Média Local (mu)
         mu = cv2.blur(gray_f, (5, 5))
-        
-        # Desvio Padrão Local (sigma)
-        # sigma = sqrt( E[X^2] - (E[X])^2 )
         mu_sq = cv2.blur(gray_f**2, (5, 5))
         sigma = np.sqrt(np.maximum(0, mu_sq - mu**2))
         
-        # Cálculo do Contraste (K = sigma / mu)
-        # Evita divisão por zero e aplica o threshold de cinza mínimo
         with np.errstate(divide='ignore', invalid='ignore'):
             k = sigma / mu
             k[mu < self.min_gray] = 0
             k = np.nan_to_num(k)
 
-        # Normalização baseada no slider de contraste (0.01 a 1.0)
         max_c = max(0.01, self.contrast_scale / 100.0)
         lasca = np.clip(k / max_c, 0, 1)
         
-        # Inverte (1 - lasca) para seguir sua lógica original e aplica ColorMap
-        lasca_inverted = (1.0 - lasca)
-        color_mapped = cv2.applyColorMap((lasca_inverted * 255).astype(np.uint8), cv2.COLORMAP_JET)
-        
+        # Mapeamento de Cores JET (Invertido para destacar atividade em vermelho)
+        color_mapped = cv2.applyColorMap(((1.0 - lasca) * 255).astype(np.uint8), cv2.COLORMAP_JET)
         return color_mapped
 
-# --- INTERFACE STREAMLIT ---
-st.sidebar.title("🧪 BiospecklePy")
-st.sidebar.caption("Sistema de Análise LASCA")
+# --- INTERFACE SUPERIOR ---
+st.title("🧪 BiospecklePy - Análise LASCA")
 
-mode = st.sidebar.radio("VISUALIZAÇÃO", ["FLUXO", "CINZA"])
-min_gray = st.sidebar.slider("MÍN CINZA", 0, 255, 10)
-contrast = st.sidebar.slider("CONTRASTE", 1, 100, 20)
-gain = st.sidebar.slider("GANHO", 1.0, 5.0, 1.0, 0.1)
-exposure = st.sidebar.slider("EXPOSIÇÃO", 1.0, 10.0, 5.0, 0.5)
+# Linha 1: Seleção de Modo e Controles Principais
+col1, col2, col3, col4 = st.columns([2, 2, 3, 3])
 
-# Inicialização do Stream de Vídeo
-ctx = webrtc_streamer(
-    key="biospeckle",
-    video_transformer_factory=BiospeckleTransformer,
-    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-    media_stream_constraints={"video": True, "audio": False},
+with col1:
+    mode = st.radio("MODO", ["FLUXO", "CINZA"], horizontal=True)
+
+with col2:
+    # Nota: No Streamlit Cloud, a seleção de câmera é feita pelo ícone de engrenagem 
+    # dentro do componente WebRTC, mas definimos o componente abaixo.
+    st.write("**CÂMERA ATIVA**")
+    st.caption("Use o menu do vídeo abaixo para trocar de câmera.")
+
+with col3:
+    gain = st.slider("GANHO", 1.0, 5.0, 1.0, 0.1)
+    exposure = st.slider("EXPOSIÇÃO", 1.0, 10.0, 5.0, 0.5)
+
+with col4:
+    contrast = st.slider("CONTRASTE (LASCA)", 1, 100, 20)
+    min_gray = st.slider("THRESHOLD CINZA", 0, 255, 10)
+
+st.divider()
+
+# --- ÁREA DO VÍDEO ---
+# Centralizando o vídeo
+v_col1, v_col2, v_col3 = st.columns([1, 10, 1])
+
+with v_col2:
+    ctx = webrtc_streamer(
+        key="biospeckle-system",
+        video_transformer_factory=BiospeckleTransformer,
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+        media_stream_constraints={
+            "video": True, # Isso habilita a seleção de câmera no cliente
+            "audio": False
+        },
+        async_processing=True,
+    )
+
+    # Passando os valores dos Sliders para o processador de imagem
+    if ctx.video_transformer:
+        ctx.video_transformer.mode = mode
+        ctx.video_transformer.min_gray = min_gray
+        ctx.video_transformer.contrast_scale = contrast
+        ctx.video_transformer.gain = gain
+        ctx.video_transformer.exposure = exposure
+
+# Rodapé
+st.markdown(
+    """
+    <style>
+    .footer { position: fixed; bottom: 0; width: 100%; text-align: center; color: gray; font-size: 12px; }
+    </style>
+    <div class="footer">Desenvolvido por Edmilson Souza Barreto | BiospecklePy 2026</div>
+    """, unsafe_allow_html=True
 )
-
-# Atualiza os parâmetros do processador em tempo real
-if ctx.video_transformer:
-    ctx.video_transformer.mode = mode
-    ctx.video_transformer.min_gray = min_gray
-    ctx.video_transformer.contrast_scale = contrast
-    ctx.video_transformer.gain = gain
-    ctx.video_transformer.exposure = exposure
-
-st.sidebar.markdown("---")
-st.sidebar.write("Desenvolvido por Edmilson Souza Barreto")
