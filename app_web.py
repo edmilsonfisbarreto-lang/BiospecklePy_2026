@@ -36,7 +36,7 @@ with col4:
 with col5:
     k_size = st.slider("Tamanho do Kernel", 3, 15, 5, step=2)
 
-# --- FUNÇÃO DA ESCALA LATERAL (INVERTIDA) ---
+# --- FUNÇÃO DA ESCALA LATERAL (INVERTIDA APENAS NA BARRA) ---
 def desenhar_escala(img):
     h, w = img.shape[:2]
     bar_w = int(w * 0.03)
@@ -44,11 +44,11 @@ def desenhar_escala(img):
     x_offset = w - bar_w - 30
     y_offset = int((h - bar_h) / 2)
 
-    # Gradiente de 0 a 255
+    # Gradiente para a BARRA: Azul no topo (Alto), Vermelho na base (Baixo)
+    # Criamos o gradiente 0-255 e aplicamos JET
     escala_cinza = np.linspace(0, 255, bar_h).astype(np.uint8).reshape(-1, 1)
     escala_cinza = np.repeat(escala_cinza, bar_w, axis=1)
-    
-    # Mapeamento JET (Nesta configuração: 255=Azul no topo, 0=Vermelho na base)
+    # No JET, 255 é Vermelho e 0 é Azul. Para Azul no topo, deixamos o 0 em cima.
     barra_colorida = cv2.applyColorMap(escala_cinza, cv2.COLORMAP_JET)
     
     cv2.rectangle(img, (x_offset-2, y_offset-2), (x_offset+bar_w+2, y_offset+bar_h+2), (255,255,255), 1)
@@ -80,17 +80,14 @@ def video_frame_callback(frame):
         max_c = max(0.01, c_scale / 100.0)
         
         with np.errstate(divide='ignore', invalid='ignore'):
-            # K = std / mean
             k = np.divide(std, mean, out=np.zeros_like(std), where=mean > 0)
             lasca = k / max_c
+            lasca[mean < m_gray] = 1.0 # Áreas escuras = sem atividade (Preto/Frio)
             
-            # Filtro de ruído: áreas escuras ficam com valor que resulta em Vermelho (Baixo)
-            lasca[mean < m_gray] = 0.0 
-            
-            # Normalização (0.0 a 1.0)
-            # Como você quer ALTO = AZUL, e no JET o azul está perto de 255:
-            # Vamos mapear lasca diretamente para o colormap sem inverter (1-lasca)
-            lasca_u8 = (np.clip(lasca, 0, 1) * 255).astype(np.uint8)
+            # VÍDEO: Mantém lógica original (Atividade alta em Vermelho)
+            # 1-lasca inverte para que valores altos de k resultem em 0 (Azul) no JET
+            # Se você quer o VÍDEO original, usamos (1.0 - lasca) para JET padrão
+            lasca_u8 = (np.clip(1.0 - lasca, 0, 1) * 255).astype(np.uint8)
             
         result = cv2.applyColorMap(lasca_u8, cv2.COLORMAP_JET)
         result = desenhar_escala(result)
@@ -98,19 +95,19 @@ def video_frame_callback(frame):
     return frame.from_ndarray(result, format="bgr24")
 
 # --- EXECUÇÃO DO STREAMER ---
-# A key dinâmica garante que o componente reinicie ao trocar a câmera no selectbox
+# Removido o "exact" para evitar OverconstrainedError
 webrtc_streamer(
-    key=f"biospeckle-stream-{escolha_camera}",
+    key=f"biospeckle-v2-{escolha_camera}",
     mode=WebRtcMode.SENDRECV,
     rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
     video_frame_callback=video_frame_callback,
     media_stream_constraints={
         "video": {
-            "facingMode": {"exact": escolha_camera}
+            "facingMode": escolha_camera 
         }, 
         "audio": False
     },
     async_processing=True,
 )
 
-st.caption("BiospecklePy Web - Escala: Azul (Alta Atividade) | Vermelho (Baixa Atividade)")
+st.caption("BiospecklePy Web - Escala corrigida na barra lateral.")
